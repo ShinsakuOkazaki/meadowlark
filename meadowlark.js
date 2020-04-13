@@ -1,9 +1,14 @@
+var http = require('http');
 var express = require('express');
 var fortune = require('./lib/fortune.js');
 var formidable = require('formidable');
-//var jqupload = require('jquery-file-upload-middleware');
 var app = express();
 var credentials = require('./credentials.js');
+var emailService = require('./lib/email.js')(credentials);
+
+//var jqupload = require('jquery-file-upload-middleware');
+
+
 var cartValidation = require('./lib/cartValidation.js');
 // set up handlebars view engine for server-side templating and caching template.
 var handlebars = require('express3-handlebars').create({
@@ -19,6 +24,52 @@ var handlebars = require('express3-handlebars').create({
 app.engine('handlebars', handlebars.engine);
 app.set('view engine', 'handlebars');
 app.set('port', process.env.PORT || 3000);
+
+app.use(function(req, res, next){
+	// create a domain for this request
+	var domain = require('domain');
+	// handle errors on this domain
+	domain.on('error', function(err){
+		console.error('DOMAIN ERROR CAUGHT\n', err.stack);
+		try{
+			// failsafe shutdown in 5 seconds
+			setTimeout(function(){
+				console.error('Failsafe shutdown.');
+				process.exit(1);
+			}, 5000);
+			var worker = require('cluster').worker;
+			if(worker) worker.disconnect();
+
+			//stop taking new requests
+			server.close();
+
+			try {
+				// stop taking new requests
+				next(err);
+			} catch(err) {
+				// if Express error route failed try
+				// plain Node response
+				console.error('Express error mechanism failed. \n', err.stack);
+				res.statusCode = 500;
+				res.setHeader('content-type', 'text/plain');
+				res.end('Server error.');
+			}
+		}
+	});
+})
+
+switch(app.get('env')) {
+	case 'development': 
+		// compact, colorful dev logging
+		app.use(require('morgan')('dev'));
+		break;
+
+	case 'production': 
+		// module 'express-logger' supports daily log rotation
+		app.use(require('express-logger')({path: __dirname + 'log/requests.log'}));
+		break;
+}
+
 
 // static middleware: it is equivarent to creating a route for each static file you want to 
 // deliver that renders a file and returns it to the client.
@@ -44,6 +95,42 @@ app.use(function(req, res, next) {
 	next();
 });
 
+// mocked weather data
+function getWeatherData(){
+    return {
+        locations: [
+            {
+                name: 'Portland',
+                forecastUrl: 'http://www.wunderground.com/US/OR/Portland.html',
+                iconUrl: 'http://icons-ak.wxug.com/i/c/k/cloudy.gif',
+                weather: 'Overcast',
+                temp: '54.1 F (12.3 C)',
+            },
+            {
+                name: 'Bend',
+                forecastUrl: 'http://www.wunderground.com/US/OR/Bend.html',
+                iconUrl: 'http://icons-ak.wxug.com/i/c/k/partlycloudy.gif',
+                weather: 'Partly Cloudy',
+                temp: '55.0 F (12.8 C)',
+            },
+            {
+                name: 'Manzanita',
+                forecastUrl: 'http://www.wunderground.com/US/OR/Manzanita.html',
+                iconUrl: 'http://icons-ak.wxug.com/i/c/k/rain.gif',
+                weather: 'Light Rain',
+                temp: '55.0 F (12.8 C)',
+            },
+        ],
+    };
+}
+
+// middleware to add weather data to context
+app.use(function(req, res, next){
+	if(!res.locals.partials) res.locals.partials = {};
+ 	res.locals.partials.weather = getWeatherData();
+ 	next();
+});
+
 
 app.get('/', function(req, res) {
 	res.render('home');
@@ -53,16 +140,113 @@ app.get('/about', function(req,res){
 						  pageTestScript: '/qa/tests-about.js'});
 });
 
+app.get('/tours/request-group-rate', function(req, res) {
+	res.render('tours/request-group-rate');
+});
+
+app.get('/jquery-test', function(req, res){
+	res.render('jquey-test');
+});
+
+app.get('/nursery-rhyme', function(req, res) {
+	res.render('nursery-rhyme');
+});
 
 app.get('/newsletter', function(req, res){
 	res.render('newsletter', {csrf: 'CSRF token goes here'});
 });
+
+app.get('/data/nursery-rhyme', function(req, res) {
+	res.json({
+		animal: 'squirrel', 
+		bodyPart: 'tail', 
+		adjective: 'bushy', 
+		noun: 'heck',
+	});
+});
+
+app.get('/thank-you', function(req, res){
+	res.render('thank-you');
+});
+
+app.get('newsletter', function(req, res) {
+	res.render('newsletter');;
+})
+
 
 function NewsletterSignup(){
 }
 NewsletterSignup.prototype.save = function(cb){
 	cb();
 };
+
+// mocking product database
+function Product(){
+}
+Product.find = function(conditions, fields, options, cb){
+	if(typeof conditions==='function') {
+		cb = conditions;
+		conditions = {};
+		fields = null;
+		options = {};
+	} else if(typeof fields==='function') {
+		cb = fields;
+		fields = null;
+		options = {};
+	} else if(typeof options==='function') {
+		cb = options;
+		options = {};
+	}
+	var products = [
+		{
+			name: 'Hood River Tour',
+			slug: 'hood-river',
+			category: 'tour',
+			maximumGuests: 15,
+			sku: 723,
+		},
+		{
+			name: 'Oregon Coast Tour',
+			slug: 'oregon-coast',
+			category: 'tour',
+			maximumGuests: 10,
+			sku: 446,
+		},
+		{
+			name: 'Rock Climbing in Bend',
+			slug: 'rock-climbing/bend',
+			category: 'adventure',
+			requiresWaiver: true,
+			maximumGuests: 4,
+			sku: 944,
+		}
+	];
+	cb(null, products.filter(function(p) {
+		if(conditions.category && p.category!==conditions.category) return false;
+		if(conditions.slug && p.slug!==conditions.slug) return false;
+		if(isFinite(conditions.sku) && p.sku!==Number(conditions.sku)) return false;
+		return true;
+	}));
+};
+Product.findOne = function(conditions, fields, options, cb){
+	if(typeof conditions==='function') {
+		cb = conditions;
+		conditions = {};
+		fields = null;
+		options = {};
+	} else if(typeof fields==='function') {
+		cb = fields;
+		fields = null;
+		options = {};
+	} else if(typeof options==='function') {
+		cb = options;
+		options = {};
+	}
+	Product.find(conditions, fields, options, function(err, products){
+		cb(err, products && products.length ? products[0] : null);
+	});
+};
+
 
 var VALID_EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
@@ -102,14 +286,6 @@ app.get('/newsletter/archive', function(req, res){
 	res.render('newsletter/archive');
 });
 
-app.post('/process', function(req, res){
-	if(req.xhr || req.accepts('json, html') === 'json'){
-		res.send({success: true});
-	} else {
-		res.redirect(303, '/thank-you');
-	}
-});
-
 app.get('/contest/vacation-photo', function(req, res){
 	var now = new Date();
 	res.render('contest/vacation-photo', {
@@ -131,18 +307,22 @@ app.post('/contest/vacation-photo/:year/:month', function(req, res){
 	});
 });
 
+app.get('/tours/:tour', function(req, res, next){
+	Product.findOne({category: 'tour', slug: req.params.tour}, function(err, tour){
+		if(err) return next(err);
+		if(!tour) return next();
+		res.render('tour', {tour: tour});
+	});
+});
 
-// app.use('/upload', function(req, res, next){
-// 	var now = Date.now();
-// 	jqupload.fileHandler({
-// 		uploadDir: function(){
-// 			return __dirname + '/public/uploads/' + now;
-// 		}, 
-// 		uploadUrl: function() {
-// 			return '/uploads/' + now;
-// 		}, 
-// 	})(req, res, next);
-// }) ;
+app.get('/adventures/:subcat/:name', function(req, res, next){
+	Product.findOne({category: 'adventure', slug: req.params.subcat + '/' + req.params.name}, function(err, adventure){
+		if(err) return next(err);
+		if(!adventure) return next();
+		res.render('adventure', {adventure: adventure});
+	});
+});
+
 
 app.get('/tours/hood-river', function(req, res) {
 	res.render('tours/hood-river');
@@ -152,21 +332,68 @@ app.get('/tours/oregon-coast', function(req, res) {
 	res.render('tours/oregon-coast');
 });
 
-app.get('/tours/request-group-rate', function(req, res) {
-	res.render('tours/request-group-rate');
-});
+app.use(cartValidation.checkWaivers);
+app.use(cartValidation.checkGuestCounts);
 
-app.get('/nursery-rhyme', function(req, res) {
-	res.render('nursery-rhyme');
-});
 
-app.get('/data/nursery-rhyme', function(req, res) {
-	res.json({
-		animal: 'squirrel', 
-		bodyPart: 'tail', 
-		adjective: 'bushy', 
-		noun: 'heck',
+app.post('/cart/add', function(req, res, next){
+	var cart = req.session.cart || (req.session.cart = {items: []});
+	Product.findOne({ sku: req.body.sku }, function(err, product){
+		if(err) return next(err);
+		if(!product) return next(new Error('Unknown product SKU: ' + req.body.sku));
+		cart.items.push({
+			product: product,
+			guestus: req.body.guests || 0,
+		});
+		res.redirect(303, '/cart');
 	});
+});
+
+app.get('/cart', function(req, res, next){
+	var cart = req.session.cart;
+	if(!cart) next();
+	res.render('cart', {cart: cart});
+});
+
+app.get('/cart/checkout', function(req, res, next){
+	var cart = req.session.cart;
+	if(!cart) next();
+	res.render('cart-checkout');
+});
+
+app.get('/cart/thank-you', function(req, res){
+	res.render('cart-thank-you', {cart: req.session.cart})
+});
+
+app.get('/email/cart/thank-you', function(req, res){
+	res.render('email/cart-thank-you', { cart: req.session.cart, layout: null});
+});
+
+app.post('/cart/checkout', function(req, res){
+	var cart = req.session.cart;
+	if(!cart) next(new Error('Cart does not exist.'));
+	var name = req.body.name || '', email = req.body.email || '';
+	// input validation
+	if(!email.match(VALID_EMAIL_REGEX)) return res.next(new Error('Invalid email address.'));
+	// assign a random cart ID; normally we would use a database ID here;
+	cart.number = Math.random().toString().replace(/^0\.0*/, '');
+	cart.billing = {
+		name: name,
+		email: email, 
+	};
+	res.render('email/cart-thank-you', 
+		{ layout: null, cart: cart}, function(err, html){
+			if(err) console.log('error in email template');
+			emailService.send(cart.billing.email, 
+						'Thank you for booking you trip with Meadowlark Travel', html);
+		});
+		res.render('cart-thank-you', {cart: cart});
+});
+
+app.get('/epic-fail', function(req, res){
+    process.nextTick(function(){
+        throw new Error('Kaboom!');
+    });
 });
 
 // 404 catch-all handler (middleware)
@@ -182,7 +409,21 @@ app.use(function(err, req, res, next){
 	res.render('500');
 });
 
-app.listen(app.get('port'), function(){
-  console.log( 'Express started on http://localhost:' + 
-    app.get('port') + '; press Ctrl-C to terminate.' );
-});
+
+var server;
+
+function startServer() {
+	server = http.createServer(app).listen(app.get('port'), function(){
+		console.log( 'Express started in ' + app.get('env') + 
+					 'mode on http://localhost: ' + app.get('port') + 
+					 '; press Ctrl-C to terminate.');
+	});
+}
+
+if(require.main === module) {
+	// application run directly; start app server
+	startServer();
+} else {
+	// application imported as a module via "require": export function to create server
+	module.exports = startServer;
+}

@@ -1,15 +1,19 @@
-var http = require('http');
-var express = require('express');
-var fortune = require('./lib/fortune.js');
-var formidable = require('formidable');
+var http = require('http'),
+	express = require('express'), 
+	forturne = require('./lib/fortune.js'), 
+	formidable = require('formidable'), 
+	fs = require('fs')
+	Vacation = require('./models/vacation.js'),
+	VacationInSeasonListener = require('./models/vacationInSeasonListener.js'), 
+	session = require('express-session');
+
 var app = express();
+
 var credentials = require('./credentials.js');
 var emailService = require('./lib/email.js')(credentials);
 
-//var jqupload = require('jquery-file-upload-middleware');
 
-
-var cartValidation = require('./lib/cartValidation.js');
+// var cartValidation = require('./lib/cartValidation.js');
 // set up handlebars view engine for server-side templating and caching template.
 var handlebars = require('express3-handlebars').create({
     defaultLayout:'main',
@@ -27,7 +31,7 @@ app.set('port', process.env.PORT || 3000);
 
 app.use(function(req, res, next){
 	// create a domain for this request
-	var domain = require('domain');
+	var domain = require('domain').create();
 	// handle errors on this domain
 	domain.on('error', function(err){
 		console.error('DOMAIN ERROR CAUGHT\n', err.stack);
@@ -54,8 +58,16 @@ app.use(function(req, res, next){
 				res.setHeader('content-type', 'text/plain');
 				res.end('Server error.');
 			}
+		} catch(err) {
+			console.error('Unable to send 500 response.\n', error.stack);
 		}
 	});
+	// add the request and response objects to the domain
+	domain.add(req);
+	domain.add(res);
+
+	// execute the rest of the request chain in the domain
+	domain.run(next);
 })
 
 switch(app.get('env')) {
@@ -70,21 +82,88 @@ switch(app.get('env')) {
 		break;
 }
 
+var MongoSessionStore = require('connect-mongo')(session);
+var sessionStore = new MongoSessionStore({url: credentials.mongo[app.get('env')].connectionString});
+
 
 // static middleware: it is equivarent to creating a route for each static file you want to 
 // deliver that renders a file and returns it to the client.
 app.use(express.static(__dirname + '/public'));
 app.use(require('body-parser')());
 app.use(require('cookie-parser')(credentials.cookieSecret));
-app.use(require('express-session')({
+app.use(session({
 	resave: false,
 	saveUninitialized: false,
 	secret: credentials.cookieSecret,
+	store: sessionStore,
 }));
 
-app.use(function(req,res, next) {
-	res.locals.showTests = app.get('env') != 'production' && req.query.test === '1';
-	next();
+var mongoose = require('mongoose');
+var opts = {
+	server: {
+		socketOptions: {keepAlive: 1}
+	}
+};
+
+switch(app.get('env')) {
+	case 'development':
+		mongoose.connect(credentials.mongo.development.connectionString, opts);
+		break;
+	case 'production':
+		mongoose.connect(credentials.mongo.production.connectionString, opts);
+		break;
+	default:
+		throw new Error('Unknown execution environment: ' + app.get('env'));
+}
+
+// find all instances of Vacation in database and invoke the callback with the list
+Vacation.find(function(err, vacations){
+	if(vacations.length) return;
+
+	new Vacation({
+		name: 'Hood River Day Trip',
+        slug: 'hood-river-day-trip',
+        category: 'Day Trip',
+        sku: 'HR199',
+        description: 'Spend a day sailing on the Columbia and ' + 
+            'enjoying craft beers in Hood River!',
+        priceInCents: 9995,
+        tags: ['day trip', 'hood river', 'sailing', 'windsurfing', 'breweries'],
+        inSeason: true,
+        maximumGuests: 16,
+        available: true,
+        packagesSold: 0,
+	}).save();
+
+	new Vacation({
+		name: 'Oregon Coast Getaway',
+        slug: 'oregon-coast-getaway',
+        category: 'Weekend Getaway',
+        sku: 'OC39',
+        description: 'Enjoy the ocean air and quaint coastal towns!',
+        priceInCents: 269995,
+        tags: ['weekend getaway', 'oregon coast', 'beachcombing'],
+        inSeason: false,
+        maximumGuests: 8,
+        available: true,
+        packagesSold: 0,
+	}).save();
+
+	new Vacation({
+        name: 'Rock Climbing in Bend',
+        slug: 'rock-climbing-in-bend',
+        category: 'Adventure',
+        sku: 'B99',
+        description: 'Experience the thrill of rock climbing in the high desert.',
+        priceInCents: 289995,
+        tags: ['weekend getaway', 'bend', 'high desert', 'rock climbing', 'hiking', 'skiing'],
+        inSeason: true,
+        requiresWaiver: true,
+        maximumGuests: 4,
+        available: false,
+        packagesSold: 0,
+        notes: 'The tour guide is currently recovering from a skiing accident.',
+	}).save();
 });
 
 app.use(function(req, res, next) {
@@ -92,6 +171,11 @@ app.use(function(req, res, next) {
 	// it to the contxt then clear it
 	res.locals.flash = req.session.flash;
 	delete req.session.flash;
+	next();
+});
+
+app.use(function(req,res, next) {
+	res.locals.showTests = app.get('env') != 'production' && req.query.test === '1';
 	next();
 });
 
@@ -124,6 +208,7 @@ function getWeatherData(){
     };
 }
 
+
 // middleware to add weather data to context
 app.use(function(req, res, next){
 	if(!res.locals.partials) res.locals.partials = {};
@@ -131,269 +216,104 @@ app.use(function(req, res, next){
  	next();
 });
 
+// create "admin" subdomain...this should appear
+// before all you other routes
+var admin = express.Router();
+app.use(require('vhost')('admin.*', admin));
 
-app.get('/', function(req, res) {
-	res.render('home');
+// create admin routes; these can be defined anywhere
+admin.get('/', function(req, res){
+	res.render('admin/home');
 });
-app.get('/about', function(req,res){
-	res.render('about', { fortune: fortune.getFortune(),
-						  pageTestScript: '/qa/tests-about.js'});
-});
-
-app.get('/tours/request-group-rate', function(req, res) {
-	res.render('tours/request-group-rate');
-});
-
-app.get('/jquery-test', function(req, res){
-	res.render('jquey-test');
+admin.get('/users', function(req, res){
+	res.render('admin/users');
 });
 
-app.get('/nursery-rhyme', function(req, res) {
-	res.render('nursery-rhyme');
-});
+// api
 
-app.get('/newsletter', function(req, res){
-	res.render('newsletter', {csrf: 'CSRF token goes here'});
-});
+require('./routes.js')(app);
 
-app.get('/data/nursery-rhyme', function(req, res) {
-	res.json({
-		animal: 'squirrel', 
-		bodyPart: 'tail', 
-		adjective: 'bushy', 
-		noun: 'heck',
-	});
-});
+var Attraction = require('./models/attraction.js');
 
-app.get('/thank-you', function(req, res){
-	res.render('thank-you');
-});
-
-app.get('newsletter', function(req, res) {
-	res.render('newsletter');;
-})
+var rest = require('connect-rest');
 
 
-function NewsletterSignup(){
-}
-NewsletterSignup.prototype.save = function(cb){
-	cb();
-};
-
-// mocking product database
-function Product(){
-}
-Product.find = function(conditions, fields, options, cb){
-	if(typeof conditions==='function') {
-		cb = conditions;
-		conditions = {};
-		fields = null;
-		options = {};
-	} else if(typeof fields==='function') {
-		cb = fields;
-		fields = null;
-		options = {};
-	} else if(typeof options==='function') {
-		cb = options;
-		options = {};
-	}
-	var products = [
-		{
-			name: 'Hood River Tour',
-			slug: 'hood-river',
-			category: 'tour',
-			maximumGuests: 15,
-			sku: 723,
-		},
-		{
-			name: 'Oregon Coast Tour',
-			slug: 'oregon-coast',
-			category: 'tour',
-			maximumGuests: 10,
-			sku: 446,
-		},
-		{
-			name: 'Rock Climbing in Bend',
-			slug: 'rock-climbing/bend',
-			category: 'adventure',
-			requiresWaiver: true,
-			maximumGuests: 4,
-			sku: 944,
-		}
-	];
-	cb(null, products.filter(function(p) {
-		if(conditions.category && p.category!==conditions.category) return false;
-		if(conditions.slug && p.slug!==conditions.slug) return false;
-		if(isFinite(conditions.sku) && p.sku!==Number(conditions.sku)) return false;
-		return true;
-	}));
-};
-Product.findOne = function(conditions, fields, options, cb){
-	if(typeof conditions==='function') {
-		cb = conditions;
-		conditions = {};
-		fields = null;
-		options = {};
-	} else if(typeof fields==='function') {
-		cb = fields;
-		fields = null;
-		options = {};
-	} else if(typeof options==='function') {
-		cb = options;
-		options = {};
-	}
-	Product.find(conditions, fields, options, function(err, products){
-		cb(err, products && products.length ? products[0] : null);
-	});
-};
-
-
-var VALID_EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
-
-app.post('/newsletter', function(req, res){
-	var name = req.body.name || '', email = req.body.email || '';
-	// input validation
-	if(!email.match(VALID_EMAIL_REGEX)) {
-		if(req.xhr) return res.json({error: 'Invalid name email address.'});
-		req.session.flash = {
-			type: 'danger',
-			intro: 'Validation error!',
-			message: 'The email address you enterd was not valid.',
-		};
-		return res.redirect(303, '/newsletter/archive');
-	}
-	new NewsletterSignup({name: name, email: email}).save(function(err){
-		if(err) {
-			if(req.xhr) return res.json({ error: 'Database error.'});
-			req.session.flash = {
-				type: 'danger', 
-				intro: 'Database error!',
-				message: 'There was a database error; please try again later.',
-			}
-			return res.redirect(303, '/newsletter/archive');
-		}
-		if(req.xhr) return res.json({success: true});
-		req.session.flash = {
-			type: 'success',
-			intro: 'Thank you!',
-			message: 'You have now been signed up for the news letter.',
-		};
-		return res.redirect(303, '/newsletter/archive');
-	})
-});
-
-app.get('/newsletter/archive', function(req, res){
-	res.render('newsletter/archive');
-});
-
-app.get('/contest/vacation-photo', function(req, res){
-	var now = new Date();
-	res.render('contest/vacation-photo', {
-		year: now.getFullYear(), 
-		month: now.getMonth()
-	});
-});
-
-app.post('/contest/vacation-photo/:year/:month', function(req, res){
-	var form = new formidable.IncomingForm();
-	form.parse(req, function(err, fields, files){
-		if(err) return res.redirect(303, '/error');
-
-		console.log('recieved fields:');
-		console.log(fields);
-		console.log('recieved files:');
-		console.log(files);
-		res.redirect(303, '/thank-you');
-	});
-});
-
-app.get('/tours/:tour', function(req, res, next){
-	Product.findOne({category: 'tour', slug: req.params.tour}, function(err, tour){
-		if(err) return next(err);
-		if(!tour) return next();
-		res.render('tour', {tour: tour});
-	});
-});
-
-app.get('/adventures/:subcat/:name', function(req, res, next){
-	Product.findOne({category: 'adventure', slug: req.params.subcat + '/' + req.params.name}, function(err, adventure){
-		if(err) return next(err);
-		if(!adventure) return next();
-		res.render('adventure', {adventure: adventure});
-	});
-});
-
-
-app.get('/tours/hood-river', function(req, res) {
-	res.render('tours/hood-river');
-});
-
-app.get('/tours/oregon-coast', function(req, res) {
-	res.render('tours/oregon-coast');
-});
-
-app.use(cartValidation.checkWaivers);
-app.use(cartValidation.checkGuestCounts);
-
-
-app.post('/cart/add', function(req, res, next){
-	var cart = req.session.cart || (req.session.cart = {items: []});
-	Product.findOne({ sku: req.body.sku }, function(err, product){
-		if(err) return next(err);
-		if(!product) return next(new Error('Unknown product SKU: ' + req.body.sku));
-		cart.items.push({
-			product: product,
-			guestus: req.body.guests || 0,
-		});
-		res.redirect(303, '/cart');
-	});
-});
-
-app.get('/cart', function(req, res, next){
-	var cart = req.session.cart;
-	if(!cart) next();
-	res.render('cart', {cart: cart});
-});
-
-app.get('/cart/checkout', function(req, res, next){
-	var cart = req.session.cart;
-	if(!cart) next();
-	res.render('cart-checkout');
-});
-
-app.get('/cart/thank-you', function(req, res){
-	res.render('cart-thank-you', {cart: req.session.cart})
-});
-
-app.get('/email/cart/thank-you', function(req, res){
-	res.render('email/cart-thank-you', { cart: req.session.cart, layout: null});
-});
-
-app.post('/cart/checkout', function(req, res){
-	var cart = req.session.cart;
-	if(!cart) next(new Error('Cart does not exist.'));
-	var name = req.body.name || '', email = req.body.email || '';
-	// input validation
-	if(!email.match(VALID_EMAIL_REGEX)) return res.next(new Error('Invalid email address.'));
-	// assign a random cart ID; normally we would use a database ID here;
-	cart.number = Math.random().toString().replace(/^0\.0*/, '');
-	cart.billing = {
-		name: name,
-		email: email, 
-	};
-	res.render('email/cart-thank-you', 
-		{ layout: null, cart: cart}, function(err, html){
-			if(err) console.log('error in email template');
-			emailService.send(cart.billing.email, 
-						'Thank you for booking you trip with Meadowlark Travel', html);
-		});
-		res.render('cart-thank-you', {cart: cart});
-});
-
-app.get('/epic-fail', function(req, res){
-    process.nextTick(function(){
-        throw new Error('Kaboom!');
+rest.get('/attractions', function(req, content, cb){
+    Attraction.find({ approved: true }, function(err, attractions){
+        if(err) return cb({ error: 'Internal error.' });
+        cb(null, attractions.map(function(a){
+            return {
+                name: a.name,
+                description: a.description,
+                location: a.location,
+            };
+        }));
     });
+});
+
+rest.post('/attraction', function(req, content, cb){
+    var a = new Attraction({
+        name: req.body.name,
+        description: req.body.description,
+        location: { lat: req.body.lat, lng: req.body.lng },
+        history: {
+            event: 'created',
+            email: req.body.email,
+            date: new Date(),
+        },
+        approved: false,
+    });
+    a.save(function(err, a){
+        if(err) return cb({ error: 'Unable to add attraction.' });
+        cb(null, { id: a._id });
+    }); 
+});
+
+rest.get('/attraction/:id', function(req, content, cb){
+    Attraction.findById(req.params.id, function(err, a){
+        if(err) return cb({ error: 'Unable to retrieve attraction.' });
+        cb(null, { 
+            name: a.name,
+            description: a.description,
+            location: a.location,
+        });
+    });
+});
+
+
+// API configuration
+var apiOptions = {
+    context: '/',
+    domain: require('domain').create(),
+};
+
+//app.use(rest.rester(apiOptions));
+apiOptions.domain.on('error', function(err){
+    console.log('API domain error.\n', err.stack);
+    setTimeout(function(){
+        console.log('Server shutting down after API domain error.');
+        process.exit(1);
+    }, 5000);
+    server.close();
+    var worker = require('cluster').worker;
+    if(worker) worker.disconnect();
+});
+
+// link API into pipeline
+app.use(vhost('api.*', rest.rester(apiOptions)));
+
+app.use(function(req, res, next){
+	var path = req.path.toLowerCase();
+	//check cache; if it's there, render the view
+	if(autoViews[path]) return res.render(authoViews[path]);
+	// if it's not in the cache, see if there's
+	// a .handlebars file that matches
+	if(fs.existsSync(__dirname + '/views' + path + '.handlebars')) {
+		autoViews[path] = path.replace(/^\//, '');
+		return res.render(authoViews[path]);
+	}
+	// no view found; pass on to 404 handler
+	next();
 });
 
 // 404 catch-all handler (middleware)

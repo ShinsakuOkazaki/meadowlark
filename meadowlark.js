@@ -5,7 +5,8 @@ var http = require('http'),
 	fs = require('fs')
 	Vacation = require('./models/vacation.js'),
 	VacationInSeasonListener = require('./models/vacationInSeasonListener.js'), 
-	session = require('express-session');
+	session = require('express-session'),
+	vhost = require('vhost');
 
 var app = express();
 
@@ -22,7 +23,10 @@ var handlebars = require('express3-handlebars').create({
             if(!this._sections) this._sections = {};
             this._sections[name] = options.fn(this);
             return null;
-        }
+		}, 
+		static: function(name) {
+			return require('./lib/static.js')
+		}
     }
 });
 app.engine('handlebars', handlebars.engine);
@@ -216,6 +220,15 @@ app.use(function(req, res, next){
  	next();
 });
 
+var static = require('./lib/static.js').map;
+app.use(function(req, res, next){
+	var now = new Date();
+	res.locals.logoImage = now.getMonth() == 11 && now.getDate() == 19 ? 
+	static('/img/logo.png') : 
+	static('/img/logo.png');
+	next();
+});
+
 // create "admin" subdomain...this should appear
 // before all you other routes
 var admin = express.Router();
@@ -235,8 +248,26 @@ require('./routes.js')(app);
 
 var Attraction = require('./models/attraction.js');
 
-var rest = require('connect-rest');
+// API configuration
+var apiOptions = {
+    context: '/',
+    domain: require('domain').create(),
+};
 
+//app.use(rest.rester(apiOptions));
+apiOptions.domain.on('error', function(err){
+    console.log('API domain error.\n', err.stack);
+    setTimeout(function(){
+        console.log('Server shutting down after API domain error.');
+        process.exit(1);
+    }, 5000);
+    server.close();
+    var worker = require('cluster').worker;
+    if(worker) worker.disconnect();
+});
+
+
+var rest = require('connect-rest').create(apiOptions);
 
 rest.get('/attractions', function(req, content, cb){
     Attraction.find({ approved: true }, function(err, attractions){
@@ -280,27 +311,10 @@ rest.get('/attraction/:id', function(req, content, cb){
     });
 });
 
-
-// API configuration
-var apiOptions = {
-    context: '/',
-    domain: require('domain').create(),
-};
-
-//app.use(rest.rester(apiOptions));
-apiOptions.domain.on('error', function(err){
-    console.log('API domain error.\n', err.stack);
-    setTimeout(function(){
-        console.log('Server shutting down after API domain error.');
-        process.exit(1);
-    }, 5000);
-    server.close();
-    var worker = require('cluster').worker;
-    if(worker) worker.disconnect();
-});
-
 // link API into pipeline
-app.use(vhost('api.*', rest.rester(apiOptions)));
+app.use(vhost('api.*', rest.processRequest()));
+
+var autoViews = {};
 
 app.use(function(req, res, next){
 	var path = req.path.toLowerCase();

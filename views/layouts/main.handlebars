@@ -13,27 +13,27 @@
 		{{{_sections.head}}}
         <meta name="description" content="">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-
-        <link rel="stylesheet" href="/vendor/bootstrap/css/bootstrap.min.css">
+		<link href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+        {{!-- <link rel="stylesheet" href="/vendor/bootstrap/css/bootstrap.min.css"> --}}
         <style>
             body {
                 padding-top: 50px;
                 padding-bottom: 20px;
             }
         </style>
-        <link rel="stylesheet" href="/vendor/bootstrap/css/bootstrap-theme.min.css">
+        {{!-- <link rel="stylesheet" href="/vendor/bootstrap/css/bootstrap-theme.min.css"> --}}
         {{#each _bundles.css}}
 			<link rel="stylesheet" href="{{static .}}">
 		{{/each}}
 
-        <script src="/vendor/js/modernizr-2.6.2-respond-1.1.0.min.js"></script>
+        {{!-- <script src="/vendor/js/modernizr-2.6.2-respond-1.1.0.min.js"></script> --}}
     </head>
     <body>
         <!--[if lt IE 7]>
             <p class="browsehappy">You are using an <strong>outdated</strong> browser. Please <a href="http://browsehappy.com/">upgrade your browser</a> to improve your experience.</p>
         <![endif]-->
 
-		<header><img src="{{static '/img/logo.png'}}" alt="Meadowlark Travel Logo"></header>
+		<header><img src="{{logoImge}}" alt="Meadowlark Travel Logo"></header>
 
 	    <div class="container">
 			{{#if flash}}
@@ -45,6 +45,10 @@
 			{{/if}}
 
 		    {{{body}}}
+
+			<hr>
+			<h2>On Twitter:</h2>
+			{{{topTweets}}}
 
 			<hr>
 
@@ -100,7 +104,7 @@
 			<script>mocha.run();</script>
 		{{/if}}
 
-        <script src="/vendor/bootstrap/js/bootstrap.min.js"></script>
-        <script src="/js/main.js"></script>
+        {{!-- <script src="/vendor/bootstrap/js/bootstrap.min.js"></script> --}}
+        {{!-- <script src="/js/main.js"></script> --}}
     </body>
 </html>

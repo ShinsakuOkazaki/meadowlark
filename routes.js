@@ -4,7 +4,9 @@ var main = require('./handlers/main.js'),
 	cart = require('./handlers/cart.js'),
 	cartValidation = require('./lib/cartValidation.js');
 	contact = require('./handlers/contact.js'),
-	samples = require('./handlers/sample.js');
+	samples = require('./handlers/sample.js'),
+	customerController = require('./controllers/customer.js'),
+	dealers = require('./handlers/dealers.js');
 module.exports = function(app) {
 
     // miscellaneous routes

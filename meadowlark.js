@@ -1,19 +1,24 @@
-var http = require('http'),
+var https = require('https'),
 	express = require('express'), 
 	forturne = require('./lib/fortune.js'), 
 	formidable = require('formidable'), 
-	fs = require('fs')
+	fs = require('fs'),
+	Dealer = require('./models/dealer.js'),
 	Vacation = require('./models/vacation.js'),
 	VacationInSeasonListener = require('./models/vacationInSeasonListener.js'), 
 	session = require('express-session'),
-	vhost = require('vhost');
+	vhost = require('vhost'),
+	Q = require('q');
 
 var app = express();
 
 var credentials = require('./credentials.js');
 var emailService = require('./lib/email.js')(credentials);
-
-
+// twitter library
+var twitter = require('./lib/twitter')({
+	consumerKey: credentials.twitter.consumerKey,
+	consumerSecret: credentials.twitter.consumerSecret,
+});
 // var cartValidation = require('./lib/cartValidation.js');
 // set up handlebars view engine for server-side templating and caching template.
 var handlebars = require('express3-handlebars').create({
@@ -25,7 +30,7 @@ var handlebars = require('express3-handlebars').create({
             return null;
 		}, 
 		static: function(name) {
-			return require('./lib/static.js')
+			return require('./lib/static.js').map(name);
 		}
     }
 });
@@ -170,6 +175,158 @@ Vacation.find(function(err, vacations){
 	}).save();
 });
 
+// initialize dealers
+Dealer.find({}, function(err, dealers){
+    if(dealers.length) return;
+	
+	new Dealer({
+		name: 'Oregon Novelties',
+		address1: '912 NW Davis St',
+		city: 'Portland',
+		state: 'OR',
+		zip: '97209',
+		country: 'US',
+		phone: '503-555-1212',
+		active: true,
+	}).save();
+
+	new Dealer({
+		name: 'Bruce\'s Bric-a-Brac',
+		address1: '159 Beeswax Ln',
+		city: 'Manzanita',
+		state: 'OR',
+		zip: '97209',
+		country: 'US',
+		phone: '503-555-1212',
+		active: true,
+	}).save();
+
+	new Dealer({
+		name: 'Aunt Beru\'s Oregon Souveniers',
+		address1: '544 NE Emerson Ave',
+		city: 'Bend',
+		state: 'OR',
+		zip: '97701',
+		country: 'US',
+		phone: '503-555-1212',
+		active: true,
+	}).save();
+
+	new Dealer({
+		name: 'Oregon Goodies',
+		address1: '1353 NW Beca Ave',
+		city: 'Corvallis',
+		state: 'OR',
+		zip: '97330',
+		country: 'US',
+		phone: '503-555-1212',
+		active: true,
+	}).save();
+
+	new Dealer({
+		name: 'Oregon Grab-n-Fly',
+		address1: '7000 NE Airport Way',
+		city: 'Portland',
+		state: 'OR',
+		zip: '97219',
+		country: 'US',
+		phone: '503-555-1212',
+		active: true,
+	}).save();
+});
+
+// dealer geocoding
+function geocodeDealer(dealer){
+    var addr = dealer.getAddress(' ');
+    if(addr===dealer.geocodedAddress) return;   // already geocoded
+
+    if(dealerCache.geocodeCount >= dealerCache.geocodeLimit){
+        // has 24 hours passed since we last started geocoding?
+        if(Date.now() > dealerCache.geocodeCount + 24 * 60 * 60 * 1000){
+            dealerCache.geocodeBegin = Date.now();
+            dealerCache.geocodeCount = 0;
+        } else {
+            // we can't geocode this now: we've
+            // reached our usage limit
+            return;
+        }
+    }
+
+	var geocode = require('./lib/geocode.js');
+    geocode(addr, function(err, coords){
+        if(err) return console.log('Geocoding failure for ' + addr);
+        dealer.lat = coords.lat;
+        dealer.lng = coords.lng;
+        dealer.save();
+    });
+}
+
+
+// optimize performance of dealer display
+function dealersToGoogleMaps(dealers){
+    var js = 'function addMarkers(map){\n' +
+        'var markers = [];\n' +
+        'var Marker = google.maps.Marker;\n' +
+        'var LatLng = google.maps.LatLng;\n';
+    dealers.forEach(function(d){
+        var name = d.name.replace(/'/, '\\\'')
+            .replace(/\\/, '\\\\');
+        js += 'markers.push(new Marker({\n' +
+                '\tposition: new LatLng(' +
+                    d.lat + ', ' + d.lng + '),\n' +
+                '\tmap: map,\n' +
+                '\ttitle: \'' + name.replace(/'/, '\\') + '\',\n' +
+            '}));\n';
+    });
+    js += '}';
+    return js;
+}
+
+// dealer cache
+var dealerCache = {
+    lastRefreshed: 0,
+    refreshInterval: 60 * 60 * 1000,
+    jsonUrl: '/dealers.json',
+    geocodeLimit: 2000,
+    geocodeCount: 0,
+    geocodeBegin: 0,
+};
+dealerCache.jsonFile = __dirname +
+    '/public' + dealerCache.jsonUrl;
+dealerCache.refresh = function(cb){
+
+    if(Date.now() > dealerCache.lastRefreshed + dealerCache.refreshInterval){
+        // we need to refresh the cache
+        Dealer.find({ active: true }, function(err, dealers){
+            if(err) return console.log('Error fetching dealers: '+
+                 err);
+
+            // geocodeDealer will do nothing if coordinates are up-to-date
+            dealers.forEach(geocodeDealer);
+
+            // we now write all the dealers out to our cached JSON file
+            fs.writeFileSync(dealerCache.jsonFile, JSON.stringify(dealers));
+
+			fs.writeFileSync(__dirname + '/public/js/dealers-googleMapMarkers.js', dealersToGoogleMaps(dealers));
+
+            // all done -- invoke callback
+            cb();
+        });
+    }
+
+};
+function refreshDealerCacheForever(){
+    dealerCache.refresh(function(){
+        // call self after refresh interval
+        setTimeout(refreshDealerCacheForever,
+            dealerCache.refreshInterval);
+    });
+}
+// create empty cache if it doesn't exist to prevent 404 errors
+if(!fs.existsSync(dealerCache.jsonFile)) fs.writeFileSync(JSON.stringify([]));
+// start refreshing cache
+refreshDealerCacheForever();
+
 app.use(function(req, res, next) {
 	// if there is a flash message, transfer 
 	// it to the contxt then clear it
@@ -218,6 +375,47 @@ app.use(function(req, res, next){
 	if(!res.locals.partials) res.locals.partials = {};
  	res.locals.partials.weather = getWeatherData();
  	next();
+});
+
+// twitter integration
+var topTweets = {
+	count: 10,
+	lastRefreshed: 0,
+	refreshInterval: 15 * 60 * 1000,
+	tweets: [],
+};
+
+function getTopTweets(cb){
+	if(Date.now() < topTweets.lastRefreshed + topTweets.refreshInterval) {
+		return setImmediate(function() {
+            cb(topTweets.tweets);
+        });
+    }
+
+	twitter.search('#travel', topTweets.count, function(result){
+		var formattedTweets = [];
+		var embedOpts = { omit_script: 1 };
+		var promises = result.statuses.map(function(status){
+            return Q.Promise(function(resolve){
+    			twitter.embed(status.id_str, embedOpts, function(embed){
+    				formattedTweets.push(embed.html);
+    				resolve();
+    			});
+            });
+		});
+		Q.all(promises).then(function(){
+			topTweets.lastRefreshed = Date.now();
+			cb(topTweets.tweets = formattedTweets);
+		});
+	});
+}
+
+// mmiddleware to add top tweets to context
+app.use(function(req, res, next) {
+	getTopTweets(function(tweets) {
+		res.locals.topTweets = tweets;
+		next();
+	});
 });
 
 var static = require('./lib/static.js').map;
@@ -311,6 +509,61 @@ rest.get('/attraction/:id', function(req, content, cb){
     });
 });
 
+
+
+
+// authentication
+var auth = require('./lib/auth.js')(app, {
+	baseUrl: process.env.BASE_URL,
+	providers: credentials.authProviders,
+	successRedirect: '/account',
+	failureRedirect: '/unauthorized',
+});
+// auth.init() links in Passport middleware:
+auth.init();
+
+// now we can specify our auth routes:
+auth.registerRoutes();
+
+// authorization helpers
+function customerOnly(req, res, next){
+	if(req.user && req.user.role==='customer') return next();
+	// we want customer-only pages to know they need to logon
+	res.redirect(303, '/unauthorized');
+}
+function employeeOnly(req, res, next){
+	if(req.user && req.user.role==='employee') return next();
+	// we want employee-only authorization failures to be "hidden", to
+	// prevent potential hackers from even knowhing that such a page exists
+	next('route');
+}
+function allow(roles) {
+	return function(req, res, next) {
+		if(req.user && roles.split(',').indexOf(req.user.role)!==-1) return next();
+		res.redirect(303, '/unauthorized');
+	};
+}
+
+app.get('/unauthorized', function(req, res) {
+	res.status(403).render('unauthorized');
+});
+
+app.get('/account', allow('customer,employee'), function(req, res){
+	res.render('account', { username: req.user.name });
+});
+app.get('/account/order-history', customerOnly, function(req, res){
+	res.render('account/order-history');
+});
+app.get('/account/email-prefs', customerOnly, function(req, res){
+	res.render('account/email-prefs');
+});
+
+// employer routes
+app.get('/sales', employeeOnly, function(req, res){
+	res.render('sales');
+});
+
+
 // link API into pipeline
 app.use(vhost('api.*', rest.processRequest()));
 
@@ -319,12 +572,12 @@ var autoViews = {};
 app.use(function(req, res, next){
 	var path = req.path.toLowerCase();
 	//check cache; if it's there, render the view
-	if(autoViews[path]) return res.render(authoViews[path]);
+	if(autoViews[path]) return res.render(autoViews[path]);
 	// if it's not in the cache, see if there's
 	// a .handlebars file that matches
 	if(fs.existsSync(__dirname + '/views' + path + '.handlebars')) {
 		autoViews[path] = path.replace(/^\//, '');
-		return res.render(authoViews[path]);
+		return res.render(autoViews[path]);
 	}
 	// no view found; pass on to 404 handler
 	next();
@@ -346,11 +599,25 @@ app.use(function(err, req, res, next){
 
 var server;
 
+
 function startServer() {
-	server = http.createServer(app).listen(app.get('port'), function(){
-		console.log( 'Express started in ' + app.get('env') + 
-					 'mode on http://localhost: ' + app.get('port') + 
-					 '; press Ctrl-C to terminate.');
+	var keyFile = __dirname + '/ssl/example.com+5-key.pem',
+		certFile = __dirname + '/ssl/example.com+5.pem';
+	if (!fs.existsSync(keyFile) || !fs.existsSync(certFile)) {
+		console.error('\n\nERROR: One or both of the SSL cert or key are missing:\n' +
+			'\t' + keyFile + '\n' +
+			'\t' + certFile + '\n' +
+			'You can generate these files using openssl; please refer to the book for instructions.\n');
+			process.exit(1);
+	}
+	var options = {
+		key: fs.readFileSync(__dirname + '/ssl/example.com+5-key.pem'),
+		cert: fs.readFileSync(__dirname + '/ssl/example.com+5.pem'),
+	};
+	server = https.createServer(options, app).listen(app.get('port'), function () {
+		console.log('Express started in ' + app.get('env') +
+			'mode on https://localhost:' + app.get('port') + ' using HTTP' +
+			'; press Ctrl-C to terminate.');
 	});
 }
 
